@@ -135,24 +135,49 @@ class LaneDataset(Dataset):
                 if not line:
                     continue
 
-                # CULane lines: image_path y1 x1 y2 x2 ... (lane coordinates)
-                parts = line.split()
-                if len(parts) < 2:
-                    continue
+                # CULane lines: image_path (absolute path like /driver_xxx/...)
+                # Remove leading slash if present and prepend data_root
+                img_path = line.lstrip('/')  # Remove leading slash
 
-                img_path = parts[0]
+                # Construct full path
+                full_path = self.data_root / img_path
 
-                # Check if path is relative or absolute
-                if not os.path.isabs(img_path):
-                    img_path = str(self.data_root / img_path)
+                # Check if file exists
+                if not os.path.exists(full_path):
+                    # Try with the original path
+                    full_path = "/" + img_path
+                    if not os.path.exists(full_path):
+                        continue
 
-                # Derive mask path
-                mask_path = img_path.replace("/driver_", "/lanes/driver_")
-                mask_path = mask_path.replace(".jpg", ".lines.txt")
+                img_path = str(full_path)
+
+                # Derive mask path (for training data, masks might be in separate directory)
+                mask_path = None
+                # Try different mask locations for CULane
+                for mask_dir in ["laneseg_label_w16", "laneseg_label_w16_test"]:
+                    # Try replacing driver_ path to find mask
+                    test_mask = img_path
+                    for driver_prefix in ["driver_23_30frame", "driver_37_30frame",
+                                         "driver_100_30frame", "driver_161_90frame",
+                                         "driver_182_30frame", "driver_193_90frame"]:
+                        if driver_prefix in test_mask:
+                            test_mask = test_mask.replace(driver_prefix, f"{mask_dir}/{driver_prefix}")
+                            break
+
+                    # CULane masks are PNG images, not .lines.txt
+                    test_mask_png = test_mask.replace(".jpg", ".png")
+                    if os.path.exists(test_mask_png):
+                        mask_path = test_mask_png
+                        break
+                    # Also try .lines.txt format (for some variants)
+                    test_mask_txt = test_mask.replace(".jpg", ".lines.txt")
+                    if os.path.exists(test_mask_txt):
+                        mask_path = test_mask_txt
+                        break
 
                 samples.append({
                     "image": img_path,
-                    "mask": mask_path if os.path.exists(mask_path) else None,
+                    "mask": mask_path,
                 })
 
         return samples
@@ -165,19 +190,39 @@ class LaneDataset(Dataset):
         """
         samples = []
 
-        for split_dir in ["driver_23_30frame", "driver_37_30frame", "driver_100_30frame"]:
+        # All possible driver directories in CULane
+        driver_dirs = [
+            "driver_23_30frame", "driver_37_30frame", "driver_100_30frame",
+            "driver_161_90frame", "driver_182_30frame", "driver_193_90frame",
+            "05081544_0305",
+        ]
+
+        for split_dir in driver_dirs:
             img_root = self.data_root / split_dir
+
+            # Check if it's a symlink and follow it
+            if img_root.is_symlink():
+                img_root = Path(os.path.realpath(img_root))
+
             if not img_root.exists():
                 continue
 
             for img_path in img_root.rglob("*.jpg"):
-                mask_path = str(img_path).replace(
-                    f"/{split_dir}/", f"/lanes/{split_dir}/"
-                ).replace(".jpg", ".lines.txt")
+                # Try multiple mask locations
+                mask_path = None
+                for mask_dir in ["laneseg_label_w16", "lanes"]:
+                    # Try different mask path patterns
+                    test_mask = str(img_path).replace(
+                        f"/{split_dir}/", f"/{mask_dir}/{split_dir}/"
+                    ).replace(".jpg", ".lines.txt")
+
+                    if os.path.exists(test_mask):
+                        mask_path = test_mask
+                        break
 
                 samples.append({
                     "image": str(img_path),
-                    "mask": mask_path if os.path.exists(mask_path) else None,
+                    "mask": mask_path,
                 })
 
         return samples

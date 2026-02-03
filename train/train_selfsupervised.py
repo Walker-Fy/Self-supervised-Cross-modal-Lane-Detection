@@ -172,6 +172,7 @@ class SCCModel(nn.Module):
             "pred_mask": pred_mask,
             "loss_info_nce": loss_info_nce,
             "loss_cosine": loss_cosine,
+            "loss_dice": torch.tensor(0.0, device=view1.device, requires_grad=True),  # Default
         }
 
         # Compute Dice loss if mask is provided

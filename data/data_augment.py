@@ -113,10 +113,16 @@ class DataAugmentation:
         else:
             augmented = self.geometric_transform(image=image)
             image_geo = augmented["image"]
+            mask_geo = None
 
-        # Resize base
+        # Resize base (both image and mask)
         image_resized = self.base_transform(image=image_geo)["image"]
-        mask_resized = self.base_transform(image=mask_geo)["mask"] if mask is not None else None
+        if mask_geo is not None:
+            # Resize mask separately (using nearest to keep binary values)
+            h, w = self.input_size
+            mask_resized = cv2.resize(mask_geo, (w, h), interpolation=cv2.INTER_NEAREST)
+        else:
+            mask_resized = None
 
         # Create two augmented views
         view1 = self.strong_transform_1(image=image_resized.copy())["image"]
@@ -151,8 +157,9 @@ class DataAugmentation:
         Returns:
             Dictionary with 'image' and 'mask' (if provided)
         """
-        # Resize
-        image_resized = self.base_transform(image=image)["image"]
+        # Resize image
+        h, w = self.input_size
+        image_resized = cv2.resize(image, (w, h), interpolation=cv2.INTER_LINEAR)
 
         # Normalize
         image_tensor = self.normalize(image=image_resized)["image"]
@@ -160,8 +167,9 @@ class DataAugmentation:
         result = {"image": image_tensor}
 
         if mask is not None:
-            mask_resized = self.base_transform(image=mask)["mask"]
-            mask_tensor = (self.mask_transform(image=mask_resized)["image"] > 0.5).float()
+            # Resize mask separately
+            mask_resized = cv2.resize(mask, (w, h), interpolation=cv2.INTER_NEAREST)
+            mask_tensor = torch.from_numpy(mask_resized).unsqueeze(0).float() / 255.0
             result["mask"] = mask_tensor
 
         return result
