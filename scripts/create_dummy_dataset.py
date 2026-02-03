@@ -44,13 +44,14 @@ class DummyLaneGenerator:
         """Generate road background.
 
         Returns:
-            Background image (H, W, 3)
+            Background image (H, W, 3) as uint8
         """
         h, w = self.image_size[1], self.image_size[0]
 
-        # Create gradient sky
+        # Create gradient sky (ensure uint8)
         sky = np.linspace((135, 206, 235), (200, 230, 255), h // 3)
         sky = np.tile(sky[:, np.newaxis, :], (1, w, 1))
+        sky = sky.astype(np.uint8)  # Convert to uint8
 
         # Create road surface
         road_color = np.array([50, 50, 50])
@@ -60,7 +61,7 @@ class DummyLaneGenerator:
         noise = np.random.randint(-10, 10, road.shape, dtype=np.int16)
         road = np.clip(road.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
-        # Combine
+        # Combine (both are now uint8)
         image = np.vstack([sky, road])
 
         return image
