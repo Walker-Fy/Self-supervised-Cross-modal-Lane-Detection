@@ -1,0 +1,59 @@
+# SCC Lane Detection - Default Configuration
+
+# Model parameters
+model:
+  visual_encoder: "ViT-B-16"
+  pretrained: "openai"
+  proj_dim: 512  # Projection dimension for CLIP features
+  freeze_visual_layers: 6  # Freeze first N layers of visual encoder
+  freeze_text_encoder: true  # Keep text encoder frozen
+
+# Data parameters
+data:
+  dataset: "culane"  # culane or tusimple
+  data_root: "./data"
+  input_size: [800, 320]  # [height, width]
+  num_workers: 4
+  pin_memory: true
+
+# Training parameters
+training:
+  batch_size: 32
+  epochs: 80
+  lr: 1.0e-4
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip: 1.0
+
+# Loss weights
+loss:
+  lambda_con: 0.5  # InfoNCE contrastive loss weight
+  lambda_cos: 0.1  # Cosine consistency loss weight
+  lambda_dice: 1.0  # Dice loss weight
+  tau: 0.07  # Temperature for InfoNCE
+
+# Augmentation parameters
+augmentation:
+  gaussian_blur: [3, 7]  # Kernel size range
+  gaussian_noise: [0.01, 0.06]  # Sigma range
+  brightness_contrast: 0.25  # Max variation (25%)
+  horizontal_flip: 0.5
+  rotate: 5  # Max rotation degrees
+
+# Logging parameters
+logging:
+  log_dir: "./outputs/logs"
+  checkpoint_dir: "./outputs/checkpoints"
+  eval_interval: 5
+  save_interval: 10
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "scc_lane_detection"
+
+# Evaluation parameters
+evaluation:
+  iou_threshold: 0.5
+  fp_threshold: [0.05, 0.08]  # For CULane
+  use_ppm: false
