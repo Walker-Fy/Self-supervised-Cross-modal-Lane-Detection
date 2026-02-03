@@ -94,6 +94,35 @@ python main.py --config config/default.yaml \
     --checkpoint outputs/checkpoints/best.pth
 ```
 
+**CULane Official Evaluation:**
+```bash
+# Generate predictions in CULane format (.lines.txt)
+python main.py --config config/default_culane.yaml \
+    --task evaluate_culane \
+    --checkpoint outputs/checkpoints/best.pth \
+    --prediction-dir ./results
+
+# Run with test-time augmentation (default)
+python main.py --config config/default_culane.yaml \
+    --task evaluate_culane \
+    --checkpoint outputs/checkpoints/best.pth \
+    --tta-scales 0.75 1.0 1.25
+
+# Disable TTA for faster inference
+python main.py --config config/default_culane.yaml \
+    --task evaluate_culane \
+    --checkpoint outputs/checkpoints/best.pth \
+    --no-tta
+```
+
+**CULane Output Format:**
+Predictions are saved as `results/*.lines.txt` files with the following format:
+```
+# Each line represents one lane
+y1 x1 y2 x2 y3 x3 ... y56 x56
+```
+Where coordinates are in pixels (y from 160 to 710, sampled at 10-pixel intervals).
+
 **Robustness evaluation:**
 ```bash
 python main.py --config config/default.yaml \
@@ -135,34 +164,51 @@ python main.py --subset 1000
 
 Configuration is managed via YAML files in `config/`. The default configuration is in `config/default.yaml`.
 
+### CULane Official Configuration
+
+For CULane official benchmark evaluation, use `config/default_culane.yaml`:
+- Input size: 590×1640 (official CULane resolution)
+- Output format: .lines.txt with lane coordinates
+- TTA scales: [0.75, 1.0, 1.25]
+- Reduced batch size: 8 (due to larger input)
+
+```bash
+python main.py --config config/default_culane.yaml --task train_selfsupervised
+```
+
 ### Key Parameters
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `model.visual_encoder` | ViT-B-16 | CLIP model name |
-| `model.freeze_visual_layers` | 6 | Frozen visual encoder layers |
-| `model.proj_dim` | 512 | Projection dimension |
-| `training.batch_size` | 32 | Training batch size |
-| `training.lr` | 1e-4 | Learning rate |
-| `training.epochs` | 80 | Total epochs |
-| `loss.lambda_con` | 0.5 | InfoNCE loss weight |
-| `loss.lambda_cos` | 0.1 | Cosine consistency weight |
-| `loss.lambda_dice` | 1.0 | Dice loss weight |
+| Parameter | Default | CULane | Description |
+|-----------|---------|--------|-------------|
+| `data.input_size` | [800, 320] | [590, 1640] | Input image size (H, W) |
+| `model.visual_encoder` | ViT-B-16 | ViT-B-16 | CLIP model name |
+| `model.freeze_visual_layers` | 6 | 6 | Frozen visual encoder layers |
+| `model.proj_dim` | 512 | 512 | Projection dimension |
+| `training.batch_size` | 32 | 8 | Training batch size |
+| `training.lr` | 1e-4 | 1e-4 | Learning rate |
+| `training.epochs` | 80 | 80 | Total epochs |
+| `loss.lambda_con` | 0.5 | 0.5 | InfoNCE loss weight |
+| `loss.lambda_cos` | 0.1 | 0.1 | Cosine consistency weight |
+| `loss.lambda_dice` | 1.0 | 1.0 | Dice loss weight |
+| `loss.lambda_reg` | - | 1.0 | L1 regression weight (CULane) |
+| `tta.scales` | - | [0.75, 1.0, 1.25] | TTA scale factors |
 
 ## Project Structure
 
 ```
 LaneCLIP/
 ├── config/                 # Configuration files
+│   ├── default.yaml        # Default configuration
+│   └── default_culane.yaml # CULane official benchmark config
 ├── data/                   # Data loading and augmentation
-│   ├── dataset_loader.py   # Dataset classes
+│   ├── dataset_loader.py   # Dataset classes (CULane, TuSimple)
 │   ├── data_augment.py     # Augmentation pipeline
 │   └── text_generator.py   # Pseudo caption generation
 ├── models/                 # Model components
 │   ├── visual_encoder.py   # CLIP ViT visual encoder
 │   ├── language_encoder.py # CLIP text encoder
 │   ├── projection.py       # Projection heads
-│   ├── lane_decoder.py     # Segmentation decoder
+│   ├── lane_decoder.py     # Segmentation decoder (+ coord regression)
 │   ├── fusion_head.py      # Cross-modal fusion
 │   └── consistency_loss.py # Loss functions
 ├── train/                  # Training scripts
@@ -172,12 +218,22 @@ LaneCLIP/
 ├── eval/                   # Evaluation scripts
 │   ├── evaluate_robustness.py   # Robustness testing
 │   ├── evaluate_crossdomain.py  # Cross-domain eval
+│   ├── evaluate_culane_official.py # CULane official eval
 │   └── visualize_features.py    # t-SNE/UMAP viz
+├── utils/                  # Utility modules
+│   ├── postprocess.py      # Lane coordinate extraction (CULane)
+│   ├── tta.py              # Test-time augmentation
+│   ├── metrics.py          # Evaluation metrics + L1 regression loss
+│   ├── logger.py           # TensorBoard/WandB logging
+│   └── seed.py             # Random seed management
 ├── scripts/                # Utility scripts
 │   ├── create_dummy_dataset.py  # Generate synthetic data
 │   ├── generate_texts.py        # Generate captions
 │   └── perturb_images.py        # Apply perturbations
 ├── tests/                  # Unit tests
+│   ├── test_dataloader.py
+│   ├── test_model_forward.py
+│   └── test_culane_format.py # CULane format validation
 └── main.py                 # Entry point
 ```
 

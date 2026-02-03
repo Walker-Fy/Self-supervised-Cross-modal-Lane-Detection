@@ -1,0 +1,107 @@
+# SCC Lane Detection - CULane Official Benchmark Configuration
+# This configuration is optimized for CULane official evaluation
+# Input size: 1640x590 (official CULane resolution)
+# Output format: .lines.txt files with lane coordinates
+
+# Model parameters
+model:
+  visual_encoder: "ViT-B-16"
+  pretrained: "openai"
+  proj_dim: 512  # Projection dimension for CLIP features
+  freeze_visual_layers: 6  # Freeze first N layers of visual encoder
+  freeze_text_encoder: true  # Keep text encoder frozen
+  decoder_type: "simple"  # simple, unet, or fpn
+
+# Data parameters
+data:
+  dataset: "culane"  # culane or tusimple
+  data_root: "./data/CULane"
+  input_size: [590, 1640]  # [height, width] - CULane official resolution
+  num_workers: 4
+  pin_memory: true
+
+# Training parameters
+training:
+  batch_size: 8  # Reduced due to larger input size
+  epochs: 80
+  lr: 1.0e-4
+  weight_decay: 0.01
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip: 1.0
+
+# Loss weights
+loss:
+  lambda_con: 0.5  # InfoNCE contrastive loss weight
+  lambda_cos: 0.1  # Cosine consistency loss weight
+  lambda_dice: 1.0  # Dice loss weight
+  lambda_seg: 1.0  # BCE + Dice segmentation loss
+  lambda_reg: 1.0  # L1 regression for lane coordinates
+  tau: 0.07  # Temperature for InfoNCE
+
+# Test-time augmentation
+tta:
+  scales: [0.75, 1.0, 1.25]  # Multi-scale testing
+  flip: true  # Horizontal flip TTA
+  aggregate: "mean"  # mean, max, or vote
+
+# Lane detection parameters
+lane_detection:
+  n_lanes: 4  # Maximum number of lanes to detect
+  n_points: 56  # Number of points per lane (CULane standard)
+  min_lane_length: 0.3  # Minimum lane length as ratio of image height
+  confidence_threshold: 0.5  # Mask confidence threshold
+  use_nms: true  # Non-maximum suppression for lane proposals
+
+# Post-processing parameters
+postprocess:
+  use_skeletonization: true  # Extract lane centerlines
+  fit_method: "spline"  # none, linear, spline, or polyfit
+  smooth: true  # Smooth lane coordinates
+  gap_filling: true  # Fill gaps in dashed lines
+
+# CULane evaluation parameters
+culane:
+  # Official evaluation settings
+  width: 1640
+  height: 590
+  # ROI settings for CULane evaluation
+  roi_start_row: 160
+  roi_end_row: 720
+  # Coordinate normalization
+  normalize_coords: false  # Use absolute pixel coordinates
+
+# Augmentation parameters (reduced for CULane)
+augmentation:
+  gaussian_blur: [3, 7]  # Kernel size range
+  gaussian_noise: [0.01, 0.06]  # Sigma range
+  brightness_contrast: 0.25  # Max variation (25%)
+  horizontal_flip: 0.0  # No flip for CULane training (handled separately)
+  rotate: 0  # No rotation for CULane
+  crop_scale: [0.9, 1.0]  # Minimal cropping
+
+# Logging parameters
+logging:
+  log_dir: "./outputs/logs"
+  checkpoint_dir: "./outputs/checkpoints"
+  eval_interval: 5
+  save_interval: 10
+  use_tensorboard: true
+  use_wandb: false
+  wandb_project: "scc_lane_detection_culane"
+
+# Evaluation parameters
+evaluation:
+  iou_threshold: 0.5
+  fp_threshold: [0.05, 0.08]  # For CULane
+  use_ppm: false
+  save_predictions: true
+  prediction_dir: "./results"
+
+# CULane-specific split paths
+culane_split:
+  train_list: "list/train.txt"
+  val_list: "list/val.txt"
+  test_list: "list/test.txt"
+  gt_dir: "./data/CULane/test_gt"

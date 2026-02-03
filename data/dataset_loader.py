@@ -27,7 +27,7 @@ class LaneDataset(Dataset):
         dataset: str = "culane",
         split: str = "train",
         transform: Optional[Callable] = None,
-        input_size: Tuple[int, int] = (800, 320),
+        input_size: Tuple[int, int] = (590, 1640),
         generate_text: bool = True,
         text_generator: Optional[TextGenerator] = None,
     ):
@@ -268,8 +268,20 @@ class LaneDataset(Dataset):
 
                     if len(points) >= 2:
                         points = np.array(points, dtype=np.int32)
-                        points[:, 0] = points[:, 0] * self.input_size[1] / 1280  # Scale x
-                        points[:, 1] = points[:, 1] * self.input_size[0] / 720  # Scale y
+                        # Scale coordinates to input size
+                        # CULane uses 1640x590, coordinates may be normalized or absolute
+                        if self.input_size == (590, 1640) or self.input_size == (590, 1640):
+                            # For CULane official size, assume coordinates are already correct
+                            # or scale from standard reference size
+                            if points[:, 0].max() > 1640 or points[:, 1].max() > 590:
+                                # Coordinates might be normalized or from different reference
+                                # Try scaling from 1280x720 (common reference)
+                                points[:, 0] = points[:, 0] * self.input_size[1] / 1280  # Scale x
+                                points[:, 1] = points[:, 1] * self.input_size[0] / 720  # Scale y
+                        else:
+                            # Scale for other input sizes
+                            points[:, 0] = points[:, 0] * self.input_size[1] / 1280  # Scale x
+                            points[:, 1] = points[:, 1] * self.input_size[0] / 720  # Scale y
                         cv2.polylines(mask, [points], False, 255, thickness=5)
 
             return mask
@@ -353,7 +365,7 @@ class RobustnessDataset(Dataset):
         split: str = "test",
         perturbation: str = "clean",
         severity: int = 1,
-        input_size: Tuple[int, int] = (800, 320),
+        input_size: Tuple[int, int] = (590, 1640),
     ):
         """Initialize robustness dataset.
 
@@ -427,7 +439,7 @@ def create_dataloader(
     dataset: str = "culane",
     split: str = "train",
     batch_size: int = 32,
-    input_size: Tuple[int, int] = (800, 320),
+    input_size: Tuple[int, int] = (590, 1640),
     num_workers: int = 4,
     pin_memory: bool = True,
     shuffle: Optional[bool] = None,

@@ -312,3 +312,238 @@ class MetricsTracker:
         metrics = self.get_metrics()
         parts = [f"{name}: {value:.4f}" for name, value in metrics.items()]
         return ", ".join(parts)
+
+
+class L1RegressionLoss(nn.Module):
+    """L1 loss for lane coordinate regression.
+
+    Used for direct lane coordinate prediction.
+    """
+
+    def __init__(
+        self,
+        reduction: str = "mean",
+        normalize_coords: bool = False,
+        img_height: int = 590,
+        img_width: int = 1640,
+    ):
+        """Initialize L1 regression loss.
+
+        Args:
+            reduction: Reduction method ('mean', 'sum', 'none')
+            normalize_coords: Whether to normalize coordinates to [0, 1]
+            img_height: Image height for normalization
+            img_width: Image width for normalization
+        """
+        super().__init__()
+        self.reduction = reduction
+        self.normalize_coords = normalize_coords
+        self.img_height = img_height
+        self.img_width = img_width
+
+    def forward(
+        self,
+        pred_lanes: torch.Tensor,
+        gt_lanes: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Calculate L1 loss for lane coordinates.
+
+        Args:
+            pred_lanes: Predicted lane coordinates (B, max_lanes, n_points, 2)
+            gt_lanes: Ground truth lane coordinates (B, max_lanes, n_points, 2)
+            mask: Optional mask for valid lanes (B, max_lanes)
+
+        Returns:
+            L1 loss value
+        """
+        # Normalize coordinates if requested
+        if self.normalize_coords:
+            pred_lanes = pred_lanes / torch.tensor(
+                [self.img_width, self.img_height],
+                device=pred_lanes.device
+            ).view(1, 1, 1, 2)
+            gt_lanes = gt_lanes / torch.tensor(
+                [self.img_width, self.img_height],
+                device=gt_lanes.device
+            ).view(1, 1, 1, 2)
+
+        # Calculate L1 loss
+        loss = torch.abs(pred_lanes - gt_lanes)
+
+        # Apply mask if provided
+        if mask is not None:
+            mask = mask.unsqueeze(-1).unsqueeze(-1)  # (B, max_lanes, 1, 1)
+            loss = loss * mask
+            n_valid = mask.sum() + 1e-7
+        else:
+            n_valid = loss.numel()
+
+        if self.reduction == "mean":
+            return loss.sum() / n_valid
+        elif self.reduction == "sum":
+            return loss.sum()
+        else:
+            return loss
+
+
+class SmoothL1RegressionLoss(nn.Module):
+    """Smooth L1 loss for lane coordinate regression.
+
+    Less sensitive to outliers than standard L1.
+    """
+
+    def __init__(
+        self,
+        beta: float = 1.0,
+        normalize_coords: bool = False,
+        img_height: int = 590,
+        img_width: int = 1640,
+    ):
+        """Initialize Smooth L1 regression loss.
+
+        Args:
+            beta: Threshold for switching from L1 to L2
+            normalize_coords: Whether to normalize coordinates
+            img_height: Image height for normalization
+            img_width: Image width for normalization
+        """
+        super().__init__()
+        self.beta = beta
+        self.normalize_coords = normalize_coords
+        self.img_height = img_height
+        self.img_width = img_width
+
+    def forward(
+        self,
+        pred_lanes: torch.Tensor,
+        gt_lanes: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Calculate Smooth L1 loss for lane coordinates.
+
+        Args:
+            pred_lanes: Predicted lane coordinates (B, max_lanes, n_points, 2)
+            gt_lanes: Ground truth lane coordinates (B, max_lanes, n_points, 2)
+            mask: Optional mask for valid lanes
+
+        Returns:
+            Smooth L1 loss value
+        """
+        # Normalize coordinates if requested
+        if self.normalize_coords:
+            pred_lanes = pred_lanes / torch.tensor(
+                [self.img_width, self.img_height],
+                device=pred_lanes.device
+            ).view(1, 1, 1, 2)
+            gt_lanes = gt_lanes / torch.tensor(
+                [self.img_width, self.img_height],
+                device=gt_lanes.device
+            ).view(1, 1, 1, 2)
+
+        diff = torch.abs(pred_lanes - gt_lanes)
+
+        # Smooth L1: use quadratic for small differences, linear for large
+        loss = torch.where(
+            diff < self.beta,
+            0.5 * diff ** 2 / self.beta,
+            diff - 0.5 * self.beta,
+        )
+
+        # Apply mask if provided
+        if mask is not None:
+            mask = mask.unsqueeze(-1).unsqueeze(-1)
+            loss = loss * mask
+            n_valid = mask.sum() + 1e-7
+        else:
+            n_valid = loss.numel()
+
+        return loss.sum() / n_valid
+
+
+def coordinate_iou(
+    pred_lanes: List[np.ndarray],
+    gt_lanes: List[np.ndarray],
+    img_width: int,
+    img_height: int,
+    tolerance: float = 0.05,
+) -> float:
+    """Calculate coordinate-based IoU for lane detection.
+
+    Args:
+        pred_lanes: List of predicted lane arrays
+        gt_lanes: List of ground truth lane arrays
+        img_width: Image width
+        img_height: Image height
+        tolerance: Distance tolerance for matching (relative to image size)
+
+    Returns:
+        IoU score based on coordinate matching
+    """
+    from .postprocess import LaneEvaluator
+
+    evaluator = LaneEvaluator()
+
+    # Match lanes
+    pred_to_gt, _, _ = evaluator.match_lanes(pred_lanes, gt_lanes)
+
+    # Calculate matched lane IoUs
+    total_iou = 0.0
+    match_count = 0
+
+    for i, gt_idx in enumerate(pred_to_gt):
+        if gt_idx is not None:
+            iou = evaluator.compute_lane_iou(
+                pred_lanes[i], gt_lanes[gt_idx],
+                img_width, img_height
+            )
+            total_iou += iou
+            match_count += 1
+
+    # Average over matched pairs
+    if match_count > 0:
+        return total_iou / match_count
+
+    return 0.0
+
+
+def lane_point_accuracy(
+    pred_lanes: List[np.ndarray],
+    gt_lanes: List[np.ndarray],
+    x_tolerance: int = 20,
+    y_tolerance: int = 5,
+) -> Dict[str, float]:
+    """Calculate point-level accuracy for lane detection.
+
+    Args:
+        pred_lanes: List of predicted lane arrays
+        gt_lanes: List of ground truth lane arrays
+        x_tolerance: Maximum x distance for match (pixels)
+        y_tolerance: Maximum y distance for match (pixels)
+
+    Returns:
+        Dictionary with precision, recall, f1
+    """
+    from .postprocess import LaneEvaluator
+
+    evaluator = LaneEvaluator(x_tolerance=x_tolerance, y_tolerance=y_tolerance)
+
+    # For each frame, evaluate
+    total_tp = 0
+    total_fp = 0
+    total_fn = 0
+
+    # Assume single frame for now
+    metrics = evaluator.evaluate_frame(
+        pred_lanes, gt_lanes,
+        img_width=1640, img_height=590
+    )
+
+    return {
+        "precision": metrics["precision"],
+        "recall": metrics["recall"],
+        "f1": metrics["f1"],
+        "tp": metrics["tp"],
+        "fp": metrics["fp"],
+        "fn": metrics["fn"],
+    }

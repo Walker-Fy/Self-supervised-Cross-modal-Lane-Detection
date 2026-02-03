@@ -18,7 +18,7 @@ class DataAugmentation:
 
     def __init__(
         self,
-        input_size: Tuple[int, int] = (800, 320),
+        input_size: Tuple[int, int] = (590, 1640),
         gaussian_blur: Tuple[int, int] = (3, 7),
         gaussian_noise: Tuple[float, float] = (0.01, 0.06),
         brightness_contrast: float = 0.25,
@@ -174,8 +174,8 @@ class RobustnessAugmentation:
 
     def __init__(
         self,
-        input_size: Tuple[int, int] = (800, 320),
-    ):
+        input_size: Tuple[int, int] = (590, 1640),
+    )
         """Initialize robustness augmentation.
 
         Args:
@@ -265,7 +265,7 @@ class RobustnessAugmentation:
 
 
 def get_test_augmentations(
-    input_size: Tuple[int, int] = (800, 320),
+    input_size: Tuple[int, int] = (590, 1640),
 ) -> List[str]:
     """Get list of available test augmentations.
 

@@ -30,7 +30,7 @@ def parse_args():
         "--task",
         type=str,
         choices=["train", "train_selfsupervised", "train_supervised", "evaluate",
-                 "robustness", "crossdomain", "visualize", "test"],
+                 "evaluate_culane", "robustness", "crossdomain", "visualize", "test"],
         default="train_selfsupervised",
         help="Task to perform",
     )
@@ -127,6 +127,32 @@ def parse_args():
         help="Local rank for distributed training",
     )
 
+    # CULane evaluation arguments
+    parser.add_argument(
+        "--no-tta",
+        action="store_true",
+        help="Disable test-time augmentation",
+    )
+    parser.add_argument(
+        "--tta-scales",
+        type=float,
+        nargs="+",
+        default=None,
+        help="TTA scale factors (e.g., 0.75 1.0 1.25)",
+    )
+    parser.add_argument(
+        "--prediction-dir",
+        type=str,
+        default="./results",
+        help="Directory to save predictions",
+    )
+    parser.add_argument(
+        "--gt-dir",
+        type=str,
+        default=None,
+        help="Ground truth directory for evaluation",
+    )
+
     return parser.parse_args()
 
 
@@ -182,6 +208,16 @@ def override_config(config: dict, args: argparse.Namespace) -> dict:
         config["data"]["num_workers"] = 0
         if args.subset is None:
             config["subset"] = 50
+
+    # Handle TTA arguments
+    if args.tta_scales is not None:
+        config.setdefault("tta", {})["scales"] = args.tta_scales
+    if args.no_tta:
+        config.setdefault("tta", {})["enabled"] = False
+    if hasattr(args, "prediction_dir"):
+        config.setdefault("evaluation", {})["prediction_dir"] = args.prediction_dir
+    if hasattr(args, "gt_dir") and args.gt_dir is not None:
+        config.setdefault("culane", {})["gt_dir"] = args.gt_dir
 
     return config
 
@@ -303,6 +339,61 @@ def evaluate(config: dict, args: argparse.Namespace):
         print(f"  {name}: {value:.4f}")
 
     return final_metrics
+
+
+def evaluate_culane(config: dict, args: argparse.Namespace):
+    """Run CULane official evaluation.
+
+    Args:
+        config: Configuration dictionary
+        args: Command line arguments
+    """
+    if args.checkpoint is None:
+        raise ValueError("--checkpoint is required for CULane evaluation")
+
+    from eval.evaluate_culane_official import evaluate_culane as eval_culane
+    from train.train_selfsupervised import SCCModel
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load model
+    model = SCCModel(
+        visual_encoder_name=config["model"]["visual_encoder"],
+        pretrained=config["model"]["pretrained"],
+        freeze_visual_layers=config["model"].get("freeze_visual_layers", 6),
+        freeze_text_encoder=config["model"].get("freeze_text_encoder", True),
+        proj_dim=config["model"]["proj_dim"],
+        input_size=tuple(config["data"]["input_size"]),
+        decoder_type=config["model"].get("decoder_type", "simple"),
+    )
+
+    checkpoint = torch.load(args.checkpoint, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.to(device)
+
+    # Get TTA settings
+    use_tta = not args.no_tta if hasattr(args, "no_tta") else True
+    tta_scales = getattr(args, "tta_scales", [0.75, 1.0, 1.25])
+
+    # Get output directory
+    output_dir = getattr(args, "prediction_dir", "./results")
+
+    # Run evaluation
+    results = eval_culane(
+        model=model,
+        data_root=config["data"]["data_root"],
+        checkpoint_path=args.checkpoint,
+        output_dir=output_dir,
+        use_tta=use_tta,
+        tta_scales=tta_scales,
+        batch_size=config["training"]["batch_size"],
+        num_workers=config["data"]["num_workers"],
+        input_size=tuple(config["data"]["input_size"]),
+        gt_dir=config.get("culane", {}).get("gt_dir"),
+        list_file=config.get("culane_split", {}).get("test_list"),
+    )
+
+    return results
 
 
 def evaluate_robustness(config: dict, args: argparse.Namespace):
@@ -481,6 +572,8 @@ def main():
         train_supervised(config, logger, args)
     elif task == "evaluate":
         evaluate(config, args)
+    elif task == "evaluate_culane":
+        evaluate_culane(config, args)
     elif task == "robustness":
         evaluate_robustness(config, args)
     elif task == "crossdomain":

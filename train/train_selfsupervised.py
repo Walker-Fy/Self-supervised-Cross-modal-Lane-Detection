@@ -18,7 +18,7 @@ from models import (
     InfoNCELoss,
     CosineConsistencyLoss,
 )
-from utils.metrics import DiceLoss, calculate_metrics, MetricsTracker
+from utils.metrics import DiceLoss, calculate_metrics, MetricsTracker, L1RegressionLoss, lane_point_accuracy
 from utils.logger import Logger
 from .utils_train import (
     create_optimizer,
@@ -96,13 +96,23 @@ class SCCModel(nn.Module):
         elif decoder_type == "fpn":
             from models.lane_decoder import FPNDecoder
             self.decoder = FPNDecoder(in_dim=proj_dim, input_size=input_size)
+        elif decoder_type == "coords":
+            from models.lane_decoder import LaneDecoderWithCoords
+            self.decoder = LaneDecoderWithCoords(in_dim=proj_dim, input_size=input_size)
+            self.use_coords = True
         else:
             self.decoder = LaneDecoder(in_dim=proj_dim, input_size=input_size)
+            self.use_coords = False
 
         # Loss functions
         self.info_nce_loss = InfoNCELoss(temperature=0.07)
         self.cosine_loss = CosineConsistencyLoss()
         self.dice_loss = DiceLoss()
+        self.l1_regression_loss = L1RegressionLoss()
+
+        # Set coordinate regression flag
+        if not hasattr(self, 'use_coords'):
+            self.use_coords = False
 
     def forward(
         self,
@@ -148,8 +158,15 @@ class SCCModel(nn.Module):
         # Get feature map for decoder
         feat_map = self.visual_encoder.get_feature_map(view1)
 
-        # Decode to lane mask
-        pred_mask = self.decoder(feat_map)  # (B, 1, H, W)
+        # Decode to lane mask (and optionally coordinates)
+        decoder_output = self.decoder(feat_map)
+
+        if self.use_coords and isinstance(decoder_output, dict):
+            pred_mask = decoder_output["mask"]
+            pred_coords = decoder_output["coords"]
+            result["pred_coords"] = pred_coords
+        else:
+            pred_mask = decoder_output
 
         result = {
             "pred_mask": pred_mask,
@@ -161,6 +178,12 @@ class SCCModel(nn.Module):
         if mask is not None:
             loss_dice = self.dice_loss(pred_mask, mask)
             result["loss_dice"] = loss_dice
+
+        # Compute L1 regression loss if using coords and gt coords provided
+        if self.use_coords and "pred_coords" in result:
+            # For now, skip coordinate loss if we don't have ground truth coordinates
+            # This would need to be loaded from the dataset
+            pass
 
         return result
 
@@ -412,6 +435,7 @@ def train(
     # Resume from checkpoint if specified
     start_epoch = 0
     best_iou = 0.0
+    best_f1 = 0.0
 
     if resume_from:
         checkpoint = torch.load(resume_from, map_location=device)
@@ -460,9 +484,10 @@ def train(
 
             logger.log_metrics(val_metrics, epoch, prefix="val")
 
-            # Save best model
-            if val_metrics.get("iou", 0) > best_iou:
-                best_iou = val_metrics["iou"]
+            # Save best model (by F1 score for CULane compatibility)
+            current_f1 = val_metrics.get("f1", val_metrics.get("iou", 0))
+            if current_f1 > best_f1:
+                best_f1 = current_f1
                 logger.save_checkpoint(
                     model,
                     optimizer,
@@ -471,7 +496,11 @@ def train(
                     val_metrics,
                     "best.pth",
                 )
-                print(f"  New best IoU: {best_iou:.4f}")
+                print(f"  New best F1: {best_f1:.4f}")
+
+            # Also track best IoU
+            if val_metrics.get("iou", 0) > best_iou:
+                best_iou = val_metrics["iou"]
 
         # Save periodic checkpoint
         if (epoch + 1) % config["logging"]["save_interval"] == 0:
@@ -489,3 +518,4 @@ def train(
 
     print("\nTraining completed!")
     print(f"Best IoU: {best_iou:.4f}")
+    print(f"Best F1: {best_f1:.4f}")

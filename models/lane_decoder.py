@@ -17,7 +17,7 @@ class LaneDecoder(nn.Module):
         self,
         in_dim: int = 512,
         hidden_dims: List[int] = [256, 128, 64],
-        input_size: tuple = (800, 320),
+        input_size: tuple = (590, 1640),
     ):
         """Initialize lane decoder.
 
@@ -96,7 +96,7 @@ class UNetDecoder(nn.Module):
         self,
         in_dim: int = 512,
         hidden_dims: List[int] = [256, 128, 64, 32],
-        input_size: tuple = (800, 320),
+        input_size: tuple = (590, 1640),
     ):
         """Initialize UNet decoder.
 
@@ -175,7 +175,7 @@ class FPNDecoder(nn.Module):
         self,
         in_dim: int = 512,
         fpn_dims: List[int] = [256, 128, 64],
-        input_size: tuple = (800, 320),
+        input_size: tuple = (590, 1640),
     ):
         """Initialize FPN decoder.
 
@@ -273,7 +273,7 @@ class SimpleUpsampleDecoder(nn.Module):
     def __init__(
         self,
         in_dim: int = 512,
-        input_size: tuple = (800, 320),
+        input_size: tuple = (590, 1640),
     ):
         """Initialize simple decoder.
 
@@ -310,3 +310,93 @@ class SimpleUpsampleDecoder(nn.Module):
         x = x.view(x.shape[0], 1, *self.input_size)
 
         return x
+
+
+class LaneDecoderWithCoords(nn.Module):
+    """Lane decoder with coordinate regression head.
+
+    Outputs both segmentation mask and lane coordinates.
+    """
+
+    def __init__(
+        self,
+        in_dim: int = 512,
+        hidden_dims: List[int] = [256, 128, 64],
+        input_size: tuple = (590, 1640),
+        n_lanes: int = 4,
+        n_points: int = 56,
+    ):
+        """Initialize lane decoder with coordinate head.
+
+        Args:
+            in_dim: Input feature dimension
+            hidden_dims: Hidden dimensions for upsampling path
+            input_size: Input image size (H, W)
+            n_lanes: Maximum number of lanes
+            n_points: Number of points per lane
+        """
+        super().__init__()
+
+        self.in_dim = in_dim
+        self.input_size = input_size
+        self.n_lanes = n_lanes
+        self.n_points = n_points
+
+        # Base decoder for segmentation
+        self.base_decoder = LaneDecoder(
+            in_dim=in_dim,
+            hidden_dims=hidden_dims,
+            input_size=input_size,
+        )
+
+        # Coordinate regression head
+        # Predict (n_lanes * n_points * 2) coordinates
+        coord_dim = n_lanes * n_points * 2
+
+        self.coord_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(in_dim, in_dim // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.1),
+            nn.Linear(in_dim // 2, coord_dim),
+        )
+
+    def forward(
+        self,
+        features: torch.Tensor,
+    ) -> dict:
+        """Forward pass.
+
+        Args:
+            features: Input features (B, D, h, w) or (B, D)
+
+        Returns:
+            Dictionary with 'mask' and 'coords'
+        """
+        # Get segmentation mask
+        mask = self.base_decoder(features)
+
+        # Get features for coordinate head
+        if features.dim() == 4:
+            feat_flat = F.adaptive_avg_pool2d(features, 1).flatten(1)
+        else:
+            feat_flat = features
+
+        # Predict coordinates
+        coords = self.coord_head(feat_flat)  # (B, n_lanes * n_points * 2)
+
+        # Reshape to (B, n_lanes, n_points, 2)
+        coords = coords.view(-1, self.n_lanes, self.n_points, 2)
+
+        # Normalize coordinates to image size
+        # Apply sigmoid and scale to image dimensions
+        coords = torch.sigmoid(coords) * torch.tensor(
+            [self.input_size[1], self.input_size[0]],
+            device=coords.device
+        ).view(1, 1, 1, 2)
+
+        return {
+            "mask": mask,
+            "coords": coords,
+        }
