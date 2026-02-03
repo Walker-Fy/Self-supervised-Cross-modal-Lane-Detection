@@ -182,7 +182,7 @@ class LaneDataset(Dataset):
 
         return samples
 
-    def _load_tusimple(self) -> List[str, Any]:
+    def _load_tusimple(self) -> List[Dict[str, Any]]:
         """Load TuSimple dataset file list.
 
         Returns:

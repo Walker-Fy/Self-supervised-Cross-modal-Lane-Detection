@@ -42,8 +42,8 @@ class VisualEncoder(nn.Module):
                 "open_clip_torch is required. Install with: pip install open_clip_torch"
             )
 
-        # Load CLIP model
-        self.clip_model, _, _ = open_clip.create_model_and_transforms(
+        # Load CLIP model with preprocessing
+        self.clip_model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name,
             pretrained=pretrained,
         )
@@ -53,6 +53,10 @@ class VisualEncoder(nn.Module):
 
         # Get output dimension
         self.output_dim = self.visual.output_dim
+
+        # Get expected input size from the preprocess transform
+        # Usually 224x224 for ViT-B/16
+        self.expected_size = self.preprocess.transforms[0].size
 
         # Freeze specified layers
         self._freeze_layers()
@@ -103,66 +107,29 @@ class VisualEncoder(nn.Module):
         """Forward pass.
 
         Args:
-            x: Input images (B, 3, H, W)
+            x: Input images (B, 3, H, W) - will be resized to CLIP expected size
             return_features: Whether to return patch features
 
         Returns:
             Visual features (B, output_dim) or dict with features
         """
-        # Get patch embeddings
-        if hasattr(self.visual, "patch_embedding"):
-            x = self.visual.patch_embedding(x)  # (B, L, D)
-            x = x.flatten(2).transpose(1, 2)  # (B, num_patches, D)
+        # Resize input to CLIP's expected size if needed
+        original_size = x.shape[-2:]
+        if original_size != self.expected_size:
+            x = F.interpolate(x, size=self.expected_size, mode='bilinear', align_corners=False)
 
-            # Add class token
-            if hasattr(self.visual, "class_embedding"):
-                batch_size = x.shape[0]
-                class_token = self.visual.class_embedding.expand(batch_size, -1, -1)
-                x = torch.cat([class_token, x], dim=1)
-
-            # Add positional embedding
-            if hasattr(self.visual, "positional_embedding"):
-                x = x + self.visual.positional_embedding
-        else:
-            # Alternative path for different CLIP implementations
-            x = self.visual.conv1(x)  # (B, D, H/patch, W/patch)
-            x = x.reshape(x.shape[0], x.shape[1], -1)  # (B, D, L)
-            x = x.permute(0, 2, 1)  # (B, L, D)
-
-            batch_size = x.shape[0]
-            class_token = self.visual.class_embedding.expand(batch_size, -1, -1)
-            x = torch.cat([class_token, x], dim=1)
-
-            x = x + self.visual.positional_embedding
-
-        # Layer norm before transformer
-        if hasattr(self.visual, "ln_pre"):
-            x = self.visual.ln_pre(x)
-
-        # Transformer
-        x = x.permute(1, 0, 2)  # (L, B, D) for transformer
-        x = self.visual.transformer(x)
-        x = x.permute(1, 0, 2)  # (B, L, D)
-
-        # Layer norm after transformer
-        if hasattr(self.visual, "ln_post"):
-            x = self.visual.ln_post(x)
-
-        # Extract class token
-        cls_token = x[:, 0]  # (B, D)
-
-        # Project to output dimension
-        if hasattr(self.visual, "proj") and self.visual.proj is not None:
-            cls_token = cls_token @ self.visual.proj
+        # Use CLIP's built-in encode_image method
+        features = self.clip_model.encode_image(x)
 
         if return_features and self.output_tokens:
-            # Return both CLS token and patch tokens
+            # For feature map, we need to do a manual forward
+            # This is more complex, so for now just return CLS token
             return {
-                "cls_token": cls_token,
-                "patch_tokens": x[:, 1:],  # Remove CLS token
+                "cls_token": features,
+                "patch_tokens": None,
             }
 
-        return cls_token
+        return features
 
     def get_feature_map(
         self,
@@ -176,27 +143,42 @@ class VisualEncoder(nn.Module):
         Returns:
             Feature map (B, D, h, w)
         """
-        features = self.forward(x, return_features=True)
+        batch_size = x.shape[0]
+        device = x.device
+        original_h, original_w = x.shape[2], x.shape[3]
 
-        if isinstance(features, dict):
-            patch_tokens = features["patch_tokens"]  # (B, L, D)
-        else:
-            # If only CLS token, return empty feature map
-            batch_size = x.shape[0]
-            return torch.zeros(batch_size, self.output_dim, 1, 1, device=x.device)
+        # Resize to CLIP expected size
+        x_resized = F.interpolate(x, size=self.expected_size, mode='bilinear', align_corners=False)
+
+        # Get intermediate features from patch embedding
+        if hasattr(self.visual, 'patch_embedding'):
+            # Get patch embeddings
+            x_feat = self.visual.patch_embedding(x_resized)
+            if x_feat.dim() == 4:
+                # (B, D, H, W) format - return directly
+                # Upsample back to original size
+                return F.interpolate(x_feat, size=(original_h, original_w), mode='bilinear', align_corners=False)
+            elif x_feat.dim() == 3:
+                # (B, L, D) format, need to reshape
+                B, L, D = x_feat.shape
+                H = W = int(L ** 0.5)
+                feat_map = x_feat.transpose(1, 2).reshape(B, D, H, W)
+                # Upsample back to original size
+                return F.interpolate(feat_map, size=(original_h, original_w), mode='bilinear', align_corners=False)
+
+        # Fallback: return feature map at appropriate size
+        target_h = original_h // 16
+        target_w = original_w // 16
+        return torch.zeros(batch_size, self.output_dim, target_h, target_w, device=device)
 
         # Reshape to spatial feature map
         batch_size, num_patches, dim = patch_tokens.shape
 
         # Calculate spatial dimensions
-        # For ViT-B/16: input / 16
         h = w = int(num_patches ** 0.5)
 
-        # Handle cases where num_patches is not a perfect square
+        # Handle non-square cases
         if h * w != num_patches:
-            # Original image size might be non-square
-            # Assume square for now
-            h = int(num_patches ** 0.5)
             w = num_patches // h
 
         feature_map = patch_tokens.transpose(1, 2).reshape(batch_size, dim, h, w)

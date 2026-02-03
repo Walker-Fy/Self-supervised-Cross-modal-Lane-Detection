@@ -4,6 +4,7 @@ from typing import List, Union, Dict
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class LanguageEncoder(nn.Module):
@@ -47,14 +48,17 @@ class LanguageEncoder(nn.Module):
             pretrained=pretrained,
         )
 
-        # Extract text encoder
-        self.text_encoder = self.clip_model.text
+        # Store model reference
+        self.model = self.clip_model
 
-        # Get output dimension
-        self.output_dim = self.text_encoder.output_dim
+        # Get output dimension (CLIP embedding size)
+        self.output_dim = 512
 
         # Get tokenizer
         self.tokenizer = open_clip.get_tokenizer(model_name)
+
+        # Store model for encoding
+        self.model = self.clip_model
 
         # Freeze if specified
         if frozen:
@@ -124,15 +128,12 @@ class LanguageEncoder(nn.Module):
         Returns:
             Text embeddings (B, output_dim)
         """
-        # Encode with CLIP text encoder
-        x = self.text_encoder(tokens)
+        # Use CLIP model's encode_text method
+        x = self.model.encode_text(tokens)
 
-        # Take features from eot token (end of text)
-        if x.dim() > 2:
-            x = x[torch.arange(x.shape[0]), tokens.argmax(dim=-1)]
-
-        if normalize:
-            x = F.normalize(x, dim=-1)
+        if not normalize:
+            # Denormalize if requested (encode_text returns normalized by default)
+            x = x * x.norm(dim=-1, keepdim=True)
 
         return x
 

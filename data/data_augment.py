@@ -7,6 +7,7 @@ import albumentations as A
 from albumentations.pytorch import ToTensorV2
 import numpy as np
 import cv2
+import torch
 
 
 class DataAugmentation:
@@ -175,7 +176,7 @@ class RobustnessAugmentation:
     def __init__(
         self,
         input_size: Tuple[int, int] = (590, 1640),
-    )
+    ):
         """Initialize robustness augmentation.
 
         Args:
